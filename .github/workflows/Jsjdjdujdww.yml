@@ -1,0 +1,1108 @@
+name: Build Teclado Voz
+
+on:
+  push:
+    branches: [main, master]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Crear archivos de Gradle y manifest
+        run: |
+          mkdir -p "$(dirname 'settings.gradle.kts')"
+          cat > 'settings.gradle.kts' <<'__FIN_ARCHIVO__'
+          pluginManagement {
+              repositories {
+                  google()
+                  mavenCentral()
+                  gradlePluginPortal()
+              }
+          }
+          dependencyResolutionManagement {
+              repositoriesMode.set(RepositoriesMode.FAIL_ON_PROJECT_REPOS)
+              repositories {
+                  google()
+                  mavenCentral()
+              }
+          }
+          rootProject.name = "TecladoVoz"
+          include(":app")
+          __FIN_ARCHIVO__
+          mkdir -p "$(dirname 'build.gradle.kts')"
+          cat > 'build.gradle.kts' <<'__FIN_ARCHIVO__'
+          plugins {
+              id("com.android.application") version "8.5.2" apply false
+              id("org.jetbrains.kotlin.android") version "1.9.24" apply false
+          }
+          __FIN_ARCHIVO__
+          mkdir -p "$(dirname 'gradle.properties')"
+          cat > 'gradle.properties' <<'__FIN_ARCHIVO__'
+          org.gradle.jvmargs=-Xmx4g -Dfile.encoding=UTF-8
+          android.useAndroidX=true
+          android.nonTransitiveRClass=true
+          kotlin.code.style=official
+          __FIN_ARCHIVO__
+          mkdir -p "$(dirname 'app/build.gradle.kts')"
+          cat > 'app/build.gradle.kts' <<'__FIN_ARCHIVO__'
+          plugins {
+              id("com.android.application")
+              id("org.jetbrains.kotlin.android")
+          }
+
+          android {
+              namespace = "com.tecladovoz"
+              compileSdk = 34
+
+              defaultConfig {
+                  applicationId = "com.tecladovoz"
+                  minSdk = 26
+                  targetSdk = 34
+                  versionCode = 1
+                  versionName = "1.0"
+              }
+
+              buildTypes {
+                  release {
+                      isMinifyEnabled = false
+                      signingConfig = signingConfigs.getByName("debug")
+                  }
+              }
+
+              compileOptions {
+                  sourceCompatibility = JavaVersion.VERSION_17
+                  targetCompatibility = JavaVersion.VERSION_17
+              }
+              kotlinOptions {
+                  jvmTarget = "17"
+              }
+              lint {
+                  checkReleaseBuilds = false
+                  abortOnError = false
+              }
+          }
+          __FIN_ARCHIVO__
+          mkdir -p "$(dirname 'app/src/main/AndroidManifest.xml')"
+          cat > 'app/src/main/AndroidManifest.xml' <<'__FIN_ARCHIVO__'
+          <?xml version="1.0" encoding="utf-8"?>
+          <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+              <uses-permission android:name="android.permission.RECORD_AUDIO" />
+              <uses-permission android:name="android.permission.INTERNET" />
+
+              <queries>
+                  <intent>
+                      <action android:name="android.speech.RecognitionService" />
+                  </intent>
+              </queries>
+
+              <application
+                  android:allowBackup="false"
+                  android:label="Teclado Voz"
+                  android:theme="@android:style/Theme.Material.NoActionBar">
+
+                  <activity
+                      android:name=".MainActivity"
+                      android:exported="true"
+                      android:windowSoftInputMode="adjustResize">
+                      <intent-filter>
+                          <action android:name="android.intent.action.MAIN" />
+                          <category android:name="android.intent.category.LAUNCHER" />
+                      </intent-filter>
+                  </activity>
+
+                  <activity
+                      android:name=".VoiceProxyActivity"
+                      android:exported="false"
+                      android:theme="@android:style/Theme.Translucent.NoTitleBar" />
+
+                  <service
+                      android:name=".KeyboardService"
+                      android:exported="true"
+                      android:label="Teclado Voz"
+                      android:permission="android.permission.BIND_INPUT_METHOD">
+                      <intent-filter>
+                          <action android:name="android.view.InputMethod" />
+                      </intent-filter>
+                      <meta-data
+                          android:name="android.view.im"
+                          android:resource="@xml/method" />
+                  </service>
+              </application>
+          </manifest>
+          __FIN_ARCHIVO__
+          mkdir -p "$(dirname 'app/src/main/res/xml/method.xml')"
+          cat > 'app/src/main/res/xml/method.xml' <<'__FIN_ARCHIVO__'
+          <?xml version="1.0" encoding="utf-8"?>
+          <input-method xmlns:android="http://schemas.android.com/apk/res/android"
+              android:settingsActivity="com.tecladovoz.MainActivity" />
+          __FIN_ARCHIVO__
+
+      - name: Crear código Kotlin
+        run: |
+          mkdir -p "$(dirname 'app/src/main/java/com/tecladovoz/Cfg.kt')"
+          cat > 'app/src/main/java/com/tecladovoz/Cfg.kt' <<'__FIN_ARCHIVO__'
+          package com.tecladovoz
+
+          import android.content.Context
+          import android.graphics.Color
+
+          object Cfg {
+              private fun sp(c: Context) = c.getSharedPreferences("cfg", Context.MODE_PRIVATE)
+
+              fun keyHeight(c: Context): Int = sp(c).getInt("kh", 48).coerceIn(36, 72)
+              fun setKeyHeight(c: Context, v: Int) = sp(c).edit().putInt("kh", v).apply()
+
+              fun textColor(c: Context): Int = sp(c).getInt("tc", Color.parseColor("#00E676"))
+              fun setTextColor(c: Context, v: Int) = sp(c).edit().putInt("tc", v).apply()
+
+              // 0 = Flotante (Google UI), 1 = Segundo Plano (Integrado)
+              fun dictationMode(c: Context): Int = sp(c).getInt("dmode", 1)
+              fun setDictationMode(c: Context, v: Int) = sp(c).edit().putInt("dmode", v).apply()
+
+              // Segundos de silencio (2 a 15 segundos)
+              fun silenceSeconds(c: Context): Int = sp(c).getInt("silence_sec", 5).coerceIn(2, 15)
+              fun setSilenceSeconds(c: Context, v: Int) = sp(c).edit().putInt("silence_sec", v).apply()
+          }
+          __FIN_ARCHIVO__
+          mkdir -p "$(dirname 'app/src/main/java/com/tecladovoz/ClipboardHelper.kt')"
+          cat > 'app/src/main/java/com/tecladovoz/ClipboardHelper.kt' <<'__FIN_ARCHIVO__'
+          package com.tecladovoz
+
+          import android.content.Context
+          import org.json.JSONArray
+
+          object ClipboardHelper {
+              private const val PREF = "clip_pref"
+              private const val KEY = "items"
+              private const val MAX_ITEMS = 20
+
+              fun getItems(c: Context): List<String> {
+                  val list = mutableListOf<String>()
+                  try {
+                      val sp = c.getSharedPreferences(PREF, Context.MODE_PRIVATE)
+                      val jsonStr = sp.getString(KEY, "[]") ?: "[]"
+                      val arr = JSONArray(jsonStr)
+                      for (i in 0 until arr.length()) {
+                          list.add(arr.getString(i))
+                      }
+                  } catch (e: Exception) {}
+                  return list
+              }
+
+              fun addItem(c: Context, text: String) {
+                  if (text.isBlank()) return
+                  val list = getItems(c).toMutableList()
+                  list.remove(text)
+                  list.add(0, text)
+                  while (list.size > MAX_ITEMS) {
+                      list.removeAt(list.size - 1)
+                  }
+                  saveItems(c, list)
+              }
+
+              private fun saveItems(c: Context, list: List<String>) {
+                  try {
+                      val sp = c.getSharedPreferences(PREF, Context.MODE_PRIVATE)
+                      val arr = JSONArray()
+                      for (item in list) {
+                          arr.put(item)
+                      }
+                      sp.edit().putString(KEY, arr.toString()).apply()
+                  } catch (e: Exception) {}
+              }
+          }
+          __FIN_ARCHIVO__
+          mkdir -p "$(dirname 'app/src/main/java/com/tecladovoz/VoiceProxyActivity.kt')"
+          cat > 'app/src/main/java/com/tecladovoz/VoiceProxyActivity.kt' <<'__FIN_ARCHIVO__'
+          package com.tecladovoz
+
+          import android.app.Activity
+          import android.content.Intent
+          import android.os.Bundle
+          import android.speech.RecognizerIntent
+          import java.util.Locale
+
+          class VoiceProxyActivity : Activity() {
+              companion object {
+                  const val ACTION_VOICE_RESULT = "com.tecladovoz.VOICE_RESULT"
+                  const val EXTRA_TEXT = "text"
+                  private const val REQ_CODE = 1001
+              }
+
+              override fun onCreate(savedInstanceState: Bundle?) {
+                  super.onCreate(savedInstanceState)
+                  val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
+                      putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
+                      putExtra(RecognizerIntent.EXTRA_LANGUAGE, Locale.getDefault())
+                  }
+                  try {
+                      startActivityForResult(intent, REQ_CODE)
+                  } catch (e: Exception) {
+                      finish()
+                  }
+              }
+
+              @Deprecated("Deprecated in Java")
+              override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
+                  super.onActivityResult(requestCode, resultCode, data)
+                  if (requestCode == REQ_CODE && resultCode == RESULT_OK && data != null) {
+                      val matches = data.getStringArrayListExtra(RecognizerIntent.RESULTS_RECOGNITION)
+                      if (!matches.isNullOrEmpty()) {
+                          val broadcast = Intent(ACTION_VOICE_RESULT).apply {
+                              setPackage(packageName)
+                              putExtra(EXTRA_TEXT, matches[0])
+                          }
+                          sendBroadcast(broadcast)
+                      }
+                  }
+                  finish()
+              }
+          }
+          __FIN_ARCHIVO__
+          mkdir -p "$(dirname 'app/src/main/java/com/tecladovoz/KeyboardService.kt')"
+          cat > 'app/src/main/java/com/tecladovoz/KeyboardService.kt' <<'__FIN_ARCHIVO__'
+          package com.tecladovoz
+
+          import android.Manifest
+          import android.annotation.SuppressLint
+          import android.content.BroadcastReceiver
+          import android.content.ClipboardManager
+          import android.content.Context
+          import android.content.Intent
+          import android.content.IntentFilter
+          import android.content.pm.PackageManager
+          import android.graphics.Color
+          import android.graphics.drawable.GradientDrawable
+          import android.graphics.drawable.StateListDrawable
+          import android.inputmethodservice.InputMethodService
+          import android.os.Build
+          import android.os.Bundle
+          import android.os.Handler
+          import android.os.Looper
+          import android.speech.RecognitionListener
+          import android.speech.RecognizerIntent
+          import android.speech.SpeechRecognizer
+          import android.text.InputType
+          import android.view.Gravity
+          import android.view.HapticFeedbackConstants
+          import android.view.KeyEvent
+          import android.view.MotionEvent
+          import android.view.View
+          import android.view.ViewGroup
+          import android.view.inputmethod.EditorInfo
+          import android.widget.LinearLayout
+          import android.widget.ScrollView
+          import android.widget.TextView
+          import java.util.Locale
+
+          class KeyboardService : InputMethodService() {
+
+              private val main = Handler(Looper.getMainLooper())
+              private var statusView: TextView? = null
+              private var micKey: TextView? = null
+              private var shiftKey: TextView? = null
+              private var symKey: TextView? = null
+              private val charKeys = ArrayList<ArrayList<TextView>>()
+              private var builtHeight = -1
+              private var builtColor = 0
+
+              private var symbols = false
+              private var shiftState = 0
+              private var lastShiftTap = 0L
+
+              private var speechRecognizer: SpeechRecognizer? = null
+              private var recording = false
+              private var showingClipboard = false
+              private var clipboardContainer: LinearLayout? = null
+              private var mainKeyboardLayout: LinearLayout? = null
+              private var pendingVoiceText: String? = null
+
+              private val voiceReceiver = object : BroadcastReceiver() {
+                  override fun onReceive(context: Context?, intent: Intent?) {
+                      val text = intent?.getStringExtra(VoiceProxyActivity.EXTRA_TEXT) ?: return
+                      ClipboardHelper.addItem(this@KeyboardService, text)
+                      val ic = currentInputConnection
+                      if (ic != null) {
+                          insertDictatedText(text)
+                      } else {
+                          pendingVoiceText = text
+                      }
+                  }
+              }
+
+              private val letters = listOf(
+                  listOf("q", "w", "e", "r", "t", "y", "u", "i", "o", "p"),
+                  listOf("a", "s", "d", "f", "g", "h", "j", "k", "l", "ñ"),
+                  listOf("z", "x", "c", "v", "b", "n", "m")
+              )
+              private val syms = listOf(
+                  listOf("@", "#", "\$", "_", "&", "-", "+", "(", ")", "/"),
+                  listOf("*", "\"", "'", ":", ";", "!", "?", "¡", "¿", "%"),
+                  listOf("~", "<", ">", "=", "[", "]", "|")
+              )
+
+              override fun onCreate() {
+                  super.onCreate()
+                  val filter = IntentFilter(VoiceProxyActivity.ACTION_VOICE_RESULT)
+                  if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                      registerReceiver(voiceReceiver, filter, RECEIVER_NOT_EXPORTED)
+                  } else {
+                      registerReceiver(voiceReceiver, filter)
+                  }
+              }
+
+              override fun onEvaluateFullscreenMode(): Boolean = false
+
+              override fun onCreateInputView(): View = buildKeyboardRoot()
+
+              override fun onStartInputView(info: EditorInfo?, restarting: Boolean) {
+                  super.onStartInputView(info, restarting)
+                  if (builtHeight != Cfg.keyHeight(this) || builtColor != Cfg.textColor(this)) {
+                      setInputView(buildKeyboardRoot())
+                  }
+                  symbols = false
+                  shiftState = 0
+                  updateAutoShift()
+                  refreshKeys()
+                  pendingVoiceText?.let {
+                      pendingVoiceText = null
+                      insertDictatedText(it)
+                  }
+              }
+
+              override fun onFinishInputView(finishingInput: Boolean) {
+                  if (recording) stopListening()
+                  super.onFinishInputView(finishingInput)
+              }
+
+              override fun onDestroy() {
+                  try {
+                      unregisterReceiver(voiceReceiver)
+                  } catch (e: Exception) {}
+                  try {
+                      speechRecognizer?.destroy()
+                  } catch (e: Exception) {}
+                  super.onDestroy()
+              }
+
+              private fun buildKeyboardRoot(): View {
+                  val root = LinearLayout(this)
+                  root.orientation = LinearLayout.VERTICAL
+                  root.setBackgroundColor(Color.parseColor("#000000"))
+
+                  val d = resources.displayMetrics.density
+                  val pad = (2 * d).toInt()
+                  root.setPadding(pad, 0, pad, pad)
+
+                  mainKeyboardLayout = buildMainKeyboard()
+                  root.addView(mainKeyboardLayout, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT))
+
+                  clipboardContainer = buildClipboardView()
+                  clipboardContainer?.visibility = View.GONE
+                  root.addView(clipboardContainer, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.MATCH_PARENT))
+
+                  return root
+              }
+
+              private fun buildMainKeyboard(): LinearLayout {
+                  val d = resources.displayMetrics.density
+                  val h = Cfg.keyHeight(this)
+                  val color = Cfg.textColor(this)
+                  builtHeight = h
+                  builtColor = color
+                  charKeys.clear()
+                  val rowH = (h * d).toInt()
+
+                  val root = LinearLayout(this)
+                  root.orientation = LinearLayout.VERTICAL
+                  root.setBackgroundColor(Color.parseColor("#000000"))
+
+                  val st = TextView(this)
+                  st.setTextColor(color)
+                  st.textSize = 12f
+                  st.gravity = Gravity.CENTER
+                  root.addView(st, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, (20 * d).toInt()))
+                  statusView = st
+
+                  val numRow = newRow(root, rowH)
+                  for (c in "1234567890") {
+                      val k = newKey(c.toString(), 1f, 18f)
+                      attach(k) { typeText(k.text.toString()) }
+                      numRow.addView(k)
+                  }
+
+                  for (ri in 0..2) {
+                      val row = newRow(root, rowH)
+                      val keys = ArrayList<TextView>()
+                      if (ri == 2) {
+                          val sk = newKey("⇧", 1.4f, 18f)
+                          attach(sk) { onShift() }
+                          row.addView(sk)
+                          shiftKey = sk
+                      }
+                      for (i in letters[ri].indices) {
+                          val k = newKey(letters[ri][i], 1f, 20f)
+                          attach(k, onLong = { longPressChar(k) }) { typeText(k.text.toString()) }
+                          row.addView(k)
+                          keys.add(k)
+                      }
+                      if (ri == 2) {
+                          val bk = newKey("⌫", 1.4f, 18f)
+                          attach(bk, repeat = true) { backspace() }
+                          row.addView(bk)
+                      }
+                      charKeys.add(keys)
+                  }
+
+                  val bottom = newRow(root, rowH)
+                  val sym = newKey("?123", 1.2f, 14f)
+                  attach(sym) { toggleSymbols() }
+                  symKey = sym
+
+                  val clip = newKey("📋", 1f, 16f)
+                  attach(clip) { toggleClipboard() }
+
+                  val mic = newKey("🎤", 1.6f, 20f)
+                  attach(mic) { toggleMic() }
+                  micKey = mic
+
+                  val comma = newKey(",", 0.8f, 20f)
+                  attach(comma) { typeText(",") }
+
+                  val space = newKey("espacio", 3.2f, 13f)
+                  attach(space) { typeText(" ") }
+
+                  val dot = newKey(".", 0.8f, 20f)
+                  attach(dot) { typeText(".") }
+
+                  val enter = newKey("↵", 1.2f, 18f)
+                  attach(enter) { pressEnter() }
+
+                  for (k in listOf(sym, clip, mic, comma, space, dot, enter)) bottom.addView(k)
+
+                  refreshKeys()
+                  return root
+              }
+
+              private fun buildClipboardView(): LinearLayout {
+                  val d = resources.displayMetrics.density
+                  val color = Cfg.textColor(this)
+                  val root = LinearLayout(this)
+                  root.orientation = LinearLayout.VERTICAL
+                  root.setBackgroundColor(Color.parseColor("#000000"))
+                  root.setPadding((8 * d).toInt(), (8 * d).toInt(), (8 * d).toInt(), (8 * d).toInt())
+
+                  val titleLayout = LinearLayout(this)
+                  titleLayout.orientation = LinearLayout.HORIZONTAL
+                  val title = TextView(this)
+                  title.text = "📋 Portapapeles (Toca para pegar)"
+                  title.setTextColor(color)
+                  title.textSize = 14f
+                  title.setTypeface(title.typeface, android.graphics.Typeface.BOLD)
+                  titleLayout.addView(title, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+
+                  val closeBtn = TextView(this)
+                  closeBtn.text = "✕ Volver"
+                  closeBtn.setTextColor(color)
+                  closeBtn.textSize = 14f
+                  closeBtn.setOnClickListener { toggleClipboard() }
+                  titleLayout.addView(closeBtn, LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT))
+                  root.addView(titleLayout)
+
+                  val scroll = ScrollView(this)
+                  val listCol = LinearLayout(this)
+                  listCol.orientation = LinearLayout.VERTICAL
+                  scroll.addView(listCol)
+                  val totalH = (Cfg.keyHeight(this) * 5 * d).toInt()
+                  root.addView(scroll, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, totalH))
+
+                  return root
+              }
+
+              private fun refreshClipboardList() {
+                  val container = (clipboardContainer?.getChildAt(1) as? ScrollView)?.getChildAt(0) as? LinearLayout ?: return
+                  container.removeAllViews()
+                  val d = resources.displayMetrics.density
+                  val color = Cfg.textColor(this)
+
+                  val items = ClipboardHelper.getItems(this)
+                  if (items.isEmpty()) {
+                      val empty = TextView(this)
+                      empty.text = "No hay elementos en el portapapeles"
+                      empty.setTextColor(Color.parseColor("#666666"))
+                      empty.textSize = 13f
+                      empty.setPadding(0, (16 * d).toInt(), 0, 0)
+                      empty.gravity = Gravity.CENTER
+                      container.addView(empty)
+                      return
+                  }
+
+                  for (item in items) {
+                      val tv = TextView(this)
+                      val snippet = if (item.length > 45) item.substring(0, 45) + "…" else item
+                      tv.text = snippet.replace("\n", " ")
+                      tv.setTextColor(color)
+                      tv.textSize = 14f
+                      tv.setPadding((12 * d).toInt(), (10 * d).toInt(), (12 * d).toInt(), (10 * d).toInt())
+
+                      val bg = GradientDrawable()
+                      bg.shape = GradientDrawable.RECTANGLE
+                      bg.cornerRadius = 6 * d
+                      bg.setColor(Color.parseColor("#0D0D0D"))
+                      tv.background = bg
+
+                      val lp = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
+                      lp.topMargin = (3 * d).toInt()
+                      lp.bottomMargin = (3 * d).toInt()
+                      tv.layoutParams = lp
+
+                      tv.setOnClickListener {
+                          typeText(item)
+                          toggleClipboard()
+                      }
+                      container.addView(tv)
+                  }
+              }
+
+              private fun toggleClipboard() {
+                  showingClipboard = !showingClipboard
+                  if (showingClipboard) {
+                      try {
+                          val cm = getSystemService(CLIPBOARD_SERVICE) as ClipboardManager
+                          cm.primaryClip?.getItemAt(0)?.text?.toString()?.let {
+                              ClipboardHelper.addItem(this, it)
+                          }
+                      } catch (e: Exception) {}
+
+                      refreshClipboardList()
+                      mainKeyboardLayout?.visibility = View.GONE
+                      clipboardContainer?.visibility = View.VISIBLE
+                  } else {
+                      clipboardContainer?.visibility = View.GONE
+                      mainKeyboardLayout?.visibility = View.VISIBLE
+                  }
+              }
+
+              private fun newRow(parent: LinearLayout, rowH: Int): LinearLayout {
+                  val row = LinearLayout(this)
+                  row.orientation = LinearLayout.HORIZONTAL
+                  parent.addView(row, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, rowH))
+                  return row
+              }
+
+              private fun newKey(label: String, weight: Float, sizeSp: Float): TextView {
+                  val d = resources.displayMetrics.density
+                  val tv = TextView(this)
+                  tv.text = label
+                  tv.textSize = sizeSp
+                  tv.setTextColor(Cfg.textColor(this))
+                  tv.gravity = Gravity.CENTER
+                  tv.setSingleLine(true)
+                  tv.includeFontPadding = false
+                  tv.background = keyBg()
+                  val lp = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.MATCH_PARENT, weight)
+                  val m = (1 * d).toInt()
+                  lp.setMargins(m, m, m, m)
+                  tv.layoutParams = lp
+                  return tv
+              }
+
+              private fun keyBg(): StateListDrawable {
+                  val d = resources.displayMetrics.density
+                  fun shape(fill: Int): GradientDrawable {
+                      val g = GradientDrawable()
+                      g.shape = GradientDrawable.RECTANGLE
+                      g.cornerRadius = 4 * d
+                      g.setColor(fill)
+                      return g
+                  }
+
+                  val sl = StateListDrawable()
+                  sl.addState(intArrayOf(android.R.attr.state_pressed), shape(Color.parseColor("#1A1A1A")))
+                  sl.addState(intArrayOf(), shape(Color.parseColor("#000000")))
+                  return sl
+              }
+
+              @SuppressLint("ClickableViewAccessibility")
+              private fun attach(v: View, repeat: Boolean = false, onLong: (() -> Unit)? = null, onTap: () -> Unit) {
+                  var longFired = false
+                  val longRun = Runnable {
+                      longFired = true
+                      v.performHapticFeedback(HapticFeedbackConstants.LONG_PRESS)
+                      onLong?.invoke()
+                  }
+                  val repRun = object : Runnable {
+                      override fun run() {
+                          onTap()
+                          main.postDelayed(this, 50)
+                      }
+                  }
+                  v.setOnTouchListener { view, ev ->
+                      when (ev.actionMasked) {
+                          MotionEvent.ACTION_DOWN -> {
+                              view.isPressed = true
+                              longFired = false
+                              view.performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP)
+                              if (repeat) {
+                                  onTap()
+                                  main.postDelayed(repRun, 400)
+                              } else if (onLong != null) {
+                                  main.postDelayed(longRun, 380)
+                              }
+                          }
+                          MotionEvent.ACTION_UP -> {
+                              view.isPressed = false
+                              main.removeCallbacks(longRun)
+                              main.removeCallbacks(repRun)
+                              if (!repeat && !longFired) onTap()
+                          }
+                          MotionEvent.ACTION_CANCEL -> {
+                              view.isPressed = false
+                              main.removeCallbacks(longRun)
+                              main.removeCallbacks(repRun)
+                          }
+                      }
+                      true
+                  }
+              }
+
+              private fun refreshKeys() {
+                  val table = if (symbols) syms else letters
+                  val upper = !symbols && shiftState != 0
+                  for (ri in charKeys.indices) {
+                      for (i in charKeys[ri].indices) {
+                          val base = table[ri][i]
+                          charKeys[ri][i].text = if (upper) base.uppercase() else base
+                      }
+                  }
+                  symKey?.text = if (symbols) "ABC" else "?123"
+              }
+
+              private fun typeText(s: String) {
+                  val ic = currentInputConnection ?: return
+                  ic.commitText(s, 1)
+                  if (shiftState == 1) shiftState = 0
+                  updateAutoShift()
+                  refreshKeys()
+              }
+
+              private fun insertDictatedText(raw: String) {
+                  val ic = currentInputConnection ?: return
+                  var t = raw.trim()
+                  if (t.isEmpty()) return
+                  val before = ic.getTextBeforeCursor(1, 0)
+                  if (!before.isNullOrEmpty() && !before[0].isWhitespace()) {
+                      t = " $t"
+                  }
+                  typeText(t)
+              }
+
+              private fun backspace() {
+                  if (currentInputConnection == null) return
+                  sendDownUpKeyEvents(KeyEvent.KEYCODE_DEL)
+                  updateAutoShift()
+                  refreshKeys()
+              }
+
+              private fun pressEnter() {
+                  val ic = currentInputConnection ?: return
+                  val ei = currentInputEditorInfo
+                  val action = if (ei != null) ei.imeOptions and EditorInfo.IME_MASK_ACTION else EditorInfo.IME_ACTION_NONE
+                  if (action != EditorInfo.IME_ACTION_NONE && action != EditorInfo.IME_ACTION_UNSPECIFIED) {
+                      ic.performEditorAction(action)
+                  } else {
+                      sendDownUpKeyEvents(KeyEvent.KEYCODE_ENTER)
+                  }
+                  updateAutoShift()
+                  refreshKeys()
+              }
+
+              private fun longPressChar(k: TextView) {
+                  if (symbols) return
+                  val t = k.text.toString()
+                  val acc = when (t.lowercase()) {
+                      "a" -> "á"
+                      "e" -> "é"
+                      "i" -> "í"
+                      "o" -> "ó"
+                      "u" -> "ú"
+                      else -> return
+                  }
+                  typeText(if (t != t.lowercase()) acc.uppercase() else acc)
+              }
+
+              private fun onShift() {
+                  if (symbols) return
+                  val now = System.currentTimeMillis()
+                  shiftState = when {
+                      shiftState == 2 -> 0
+                      now - lastShiftTap < 350 -> 2
+                      shiftState == 1 -> 0
+                      else -> 1
+                  }
+                  lastShiftTap = now
+                  refreshKeys()
+              }
+
+              private fun toggleSymbols() {
+                  symbols = !symbols
+                  refreshKeys()
+              }
+
+              private fun updateAutoShift() {
+                  if (shiftState == 2 || symbols) return
+                  val ei = currentInputEditorInfo
+                  val ic = currentInputConnection
+                  var on = false
+                  if (ei != null && ic != null && (ei.inputType and InputType.TYPE_MASK_CLASS) == InputType.TYPE_CLASS_TEXT) {
+                      on = ic.getCursorCapsMode(ei.inputType) != 0
+                  }
+                  shiftState = if (on) 1 else 0
+              }
+
+              private fun toggleMic() {
+                  if (recording) {
+                      stopListening()
+                  } else {
+                      startListening()
+                  }
+              }
+
+              private fun startListening() {
+                  if (checkSelfPermission(Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
+                      statusView?.text = "Falta permiso de micrófono"
+                      return
+                  }
+
+                  val mode = Cfg.dictationMode(this)
+                  if (mode == 0) {
+                      try {
+                          val intent = Intent(this, VoiceProxyActivity::class.java).apply {
+                              addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                          }
+                          startActivity(intent)
+                      } catch (e: Exception) {
+                          statusView?.text = "No se pudo abrir dictado"
+                      }
+                  } else {
+                      try {
+                          speechRecognizer?.destroy()
+                      } catch (e: Exception) {}
+
+                      speechRecognizer = SpeechRecognizer.createSpeechRecognizer(this)
+                      val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
+                          putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
+                          putExtra(RecognizerIntent.EXTRA_LANGUAGE, Locale.getDefault())
+                          putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, true)
+
+                          val silenceMs = Cfg.silenceSeconds(this@KeyboardService) * 1000L
+                          putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_COMPLETE_SILENCE_LENGTH_MILLIS, silenceMs)
+                          putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_POSSIBLY_COMPLETE_SILENCE_LENGTH_MILLIS, silenceMs)
+                      }
+
+                      speechRecognizer?.setRecognitionListener(object : RecognitionListener {
+                          override fun onReadyForSpeech(params: Bundle?) {
+                              recording = true
+                              micKey?.text = "■"
+                              statusView?.text = "● Escuchando..."
+                          }
+                          override fun onBeginningOfSpeech() {}
+                          override fun onRmsChanged(rmsdB: Float) {}
+                          override fun onBufferReceived(buffer: ByteArray?) {}
+                          override fun onEndOfSpeech() {
+                              recording = false
+                              micKey?.text = "🎤"
+                              statusView?.text = "Procesando..."
+                          }
+                          override fun onError(error: Int) {
+                              recording = false
+                              micKey?.text = "🎤"
+                              statusView?.text = ""
+                          }
+                          override fun onResults(results: Bundle?) {
+                              recording = false
+                              micKey?.text = "🎤"
+                              statusView?.text = ""
+                              val matches = results?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
+                              if (!matches.isNullOrEmpty()) {
+                                  val text = matches[0]
+                                  insertDictatedText(text)
+                                  ClipboardHelper.addItem(this@KeyboardService, text)
+                              }
+                          }
+                          override fun onPartialResults(partialResults: Bundle?) {}
+                          override fun onEvent(eventType: Int, params: Bundle?) {}
+                      })
+
+                      speechRecognizer?.startListening(intent)
+                  }
+              }
+
+              private fun stopListening() {
+                  try {
+                      speechRecognizer?.stopListening()
+                  } catch (e: Exception) {}
+                  recording = false
+                  micKey?.text = "🎤"
+                  statusView?.text = ""
+              }
+          }
+          __FIN_ARCHIVO__
+          mkdir -p "$(dirname 'app/src/main/java/com/tecladovoz/MainActivity.kt')"
+          cat > 'app/src/main/java/com/tecladovoz/MainActivity.kt' <<'__FIN_ARCHIVO__'
+          package com.tecladovoz
+
+          import android.Manifest
+          import android.app.Activity
+          import android.content.Intent
+          import android.content.pm.PackageManager
+          import android.content.res.ColorStateList
+          import android.graphics.Color
+          import android.graphics.drawable.GradientDrawable
+          import android.os.Bundle
+          import android.provider.Settings
+          import android.text.InputType
+          import android.view.Gravity
+          import android.view.ViewGroup
+          import android.view.inputmethod.InputMethodManager
+          import android.widget.Button
+          import android.widget.EditText
+          import android.widget.LinearLayout
+          import android.widget.ScrollView
+          import android.widget.SeekBar
+          import android.widget.TextView
+
+          class MainActivity : Activity() {
+
+              private val green = Color.parseColor("#00E676")
+
+              private lateinit var tvKeyboard: TextView
+              private lateinit var tvMic: TextView
+              private lateinit var tvMode: TextView
+              private lateinit var tvSilence: TextView
+              private lateinit var tvColor: TextView
+              private val colorButtons = LinkedHashMap<Int, Button>()
+
+              private fun dp(v: Int): Int = (v * resources.displayMetrics.density).toInt()
+
+              override fun onCreate(savedInstanceState: Bundle?) {
+                  super.onCreate(savedInstanceState)
+                  window.statusBarColor = Color.BLACK
+                  window.navigationBarColor = Color.BLACK
+
+                  val scroll = ScrollView(this)
+                  scroll.setBackgroundColor(Color.BLACK)
+                  val col = LinearLayout(this)
+                  col.orientation = LinearLayout.VERTICAL
+                  col.setPadding(dp(18), dp(24), dp(18), dp(40))
+                  scroll.addView(col)
+                  setContentView(scroll)
+
+                  addText(col, "Teclado Voz", 26f, true)
+
+                  addText(col, "1. Activar el teclado", 17f, true)
+                  tvKeyboard = addText(col, "", 14f, false)
+                  addButton(col, "Abrir ajustes de teclados") {
+                      startActivity(Intent(Settings.ACTION_INPUT_METHOD_SETTINGS))
+                  }
+                  addButton(col, "Elegir Teclado Voz como teclado activo") {
+                      (getSystemService(INPUT_METHOD_SERVICE) as InputMethodManager).showInputMethodPicker()
+                  }
+
+                  addText(col, "2. Permiso del micrófono", 17f, true)
+                  tvMic = addText(col, "", 14f, false)
+                  addButton(col, "Dar permiso del micrófono") {
+                      requestPermissions(arrayOf(Manifest.permission.RECORD_AUDIO), 1)
+                  }
+
+                  addText(col, "3. Color de las letras", 17f, true)
+                  tvColor = addText(col, "", 14f, false)
+                  val colorRow = LinearLayout(this)
+                  colorRow.orientation = LinearLayout.HORIZONTAL
+                  col.addView(colorRow, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
+
+                  val colors = linkedMapOf(
+                      "Verde" to Color.parseColor("#00E676"),
+                      "Blanco" to Color.parseColor("#FFFFFF"),
+                      "Cian" to Color.parseColor("#00E5FF"),
+                      "Amarillo" to Color.parseColor("#FFEB3B"),
+                      "Rosa" to Color.parseColor("#FF4081")
+                  )
+                  for ((name, colVal) in colors) {
+                      val b = Button(this)
+                      b.text = name
+                      b.textSize = 12f
+                      b.isAllCaps = false
+                      val lp = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
+                      lp.setMargins(dp(2), dp(2), dp(2), dp(2))
+                      b.setOnClickListener {
+                          Cfg.setTextColor(this, colVal)
+                          refresh()
+                      }
+                      colorRow.addView(b, lp)
+                      colorButtons[colVal] = b
+                  }
+
+                  addText(col, "4. Método de dictado por voz", 17f, true)
+                  tvMode = addText(col, "", 14f, false)
+                  addButton(col, "Cambiar método de dictado (Flotante / Segundo plano)") {
+                      val current = Cfg.dictationMode(this)
+                      Cfg.setDictationMode(this, if (current == 1) 0 else 1)
+                      refresh()
+                  }
+
+                  addText(col, "5. Tiempo de espera por silencio", 17f, true)
+                  tvSilence = addText(col, "", 14f, false)
+                  val sbSilence = SeekBar(this)
+                  sbSilence.max = 13
+                  sbSilence.progress = Cfg.silenceSeconds(this) - 2
+                  tint(sbSilence)
+                  sbSilence.setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
+                      override fun onProgressChanged(s: SeekBar?, p: Int, fromUser: Boolean) {
+                          val secs = p + 2
+                          Cfg.setSilenceSeconds(this@MainActivity, secs)
+                          tvSilence.text = "Esperar antes de cortar: $secs segundos"
+                      }
+                      override fun onStartTrackingTouch(s: SeekBar?) {}
+                      override fun onStopTrackingTouch(s: SeekBar?) {}
+                  })
+                  col.addView(sbSilence)
+
+                  addText(col, "6. Tamaño de las teclas", 17f, true)
+                  val tvSize = addText(col, "Altura: ${Cfg.keyHeight(this)} dp", 14f, false)
+                  val sbSize = SeekBar(this)
+                  sbSize.max = 36
+                  sbSize.progress = Cfg.keyHeight(this) - 36
+                  tint(sbSize)
+                  sbSize.setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
+                      override fun onProgressChanged(s: SeekBar?, p: Int, fromUser: Boolean) {
+                          Cfg.setKeyHeight(this@MainActivity, p + 36)
+                          tvSize.text = "Altura: ${p + 36} dp"
+                      }
+                      override fun onStartTrackingTouch(s: SeekBar?) {}
+                      override fun onStopTrackingTouch(s: SeekBar?) {}
+                  })
+                  col.addView(sbSize)
+
+                  addText(col, "7. Prueba el teclado aquí", 17f, true)
+                  val et = EditText(this)
+                  et.setTextColor(green)
+                  et.setHintTextColor(Color.parseColor("#444444"))
+                  et.hint = "Escribe o prueba el portapapeles y el dictado aquí…"
+                  et.minLines = 3
+                  et.gravity = Gravity.TOP
+                  et.inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_MULTI_LINE
+                  et.background = border(false, green)
+                  et.setPadding(dp(12), dp(12), dp(12), dp(12))
+                  col.addView(et, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
+
+                  refresh()
+              }
+
+              override fun onResume() {
+                  super.onResume()
+                  refresh()
+              }
+
+              override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<out String>, grantResults: IntArray) {
+                  super.onRequestPermissionsResult(requestCode, permissions, grantResults)
+                  refresh()
+              }
+
+              private fun border(selected: Boolean, color: Int): GradientDrawable {
+                  val g = GradientDrawable()
+                  g.cornerRadius = dp(8).toFloat()
+                  g.setColor(if (selected) color else Color.BLACK)
+                  g.setStroke(dp(1), if (selected) color else Color.parseColor("#222222"))
+                  return g
+              }
+
+              private fun styleBtn(b: Button) {
+                  b.background = border(false, green)
+                  b.setTextColor(green)
+                  b.isAllCaps = false
+              }
+
+              private fun addText(parent: LinearLayout, t: String, sp: Float, bold: Boolean): TextView {
+                  val tv = TextView(this)
+                  tv.text = t
+                  tv.textSize = sp
+                  tv.setTextColor(green)
+                  if (bold) tv.setTypeface(tv.typeface, android.graphics.Typeface.BOLD)
+                  val lp = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
+                  lp.topMargin = dp(if (bold) 16 else 6)
+                  parent.addView(tv, lp)
+                  return tv
+              }
+
+              private fun addButton(parent: LinearLayout, label: String, onClick: () -> Unit): Button {
+                  val b = Button(this)
+                  b.text = label
+                  styleBtn(b)
+                  b.setOnClickListener { onClick() }
+                  val lp = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
+                  lp.topMargin = dp(6)
+                  parent.addView(b, lp)
+                  return b
+              }
+
+              private fun tint(s: SeekBar) {
+                  s.progressTintList = ColorStateList.valueOf(green)
+                  s.thumbTintList = ColorStateList.valueOf(green)
+              }
+
+              private fun refresh() {
+                  val imm = getSystemService(INPUT_METHOD_SERVICE) as InputMethodManager
+                  val enabled = imm.enabledInputMethodList.any { it.packageName == packageName }
+                  val current = Settings.Secure.getString(contentResolver, Settings.Secure.DEFAULT_INPUT_METHOD) ?: ""
+                  val selected = current.startsWith("$packageName/")
+                  tvKeyboard.text = (if (enabled) "✓ Activado" else "✗ Sin activar") + "   |   " + (if (selected) "✓ En uso" else "✗ No seleccionado")
+
+                  val granted = checkSelfPermission(Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED
+                  tvMic.text = if (granted) "✓ Permiso concedido" else "✗ Sin permiso de micrófono"
+
+                  val selectedColor = Cfg.textColor(this)
+                  for ((colVal, btn) in colorButtons) {
+                      val isSel = colVal == selectedColor
+                      btn.background = border(isSel, colVal)
+                      btn.setTextColor(if (isSel) Color.BLACK else colVal)
+                  }
+                  tvColor.text = "Selecciona tu color favorito para las teclas"
+
+                  val mode = Cfg.dictationMode(this)
+                  tvMode.text = "Método actual: " + if (mode == 0) "Modo Flotante (Ventana de Google)" else "Modo Segundo Plano (Silencioso e integrado)"
+
+                  tvSilence.text = "Esperar antes de cortar: ${Cfg.silenceSeconds(this)} segundos"
+              }
+          }
+          __FIN_ARCHIVO__
+
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.7'
+
+      - name: Crear clave de depuración
+        run: |
+          mkdir -p ~/.android
+          if [ ! -f ~/.android/debug.keystore ]; then
+            keytool -genkeypair -v -keystore ~/.android/debug.keystore \
+              -storepass android -keypass android -alias androiddebugkey \
+              -keyalg RSA -keysize 2048 -validity 10000 \
+              -dname "CN=Android Debug,O=Android,C=US"
+          fi
+
+      - name: Compilar APK
+        run: gradle assembleRelease --no-daemon --stacktrace
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: TecladoVoz-apk
+          path: app/build/outputs/apk/release/*.apk
